@@ -5,11 +5,10 @@
 
 use anyhow::{Result, Context};
 use sqlx::{sqlite::SqlitePoolOptions, FromRow, Pool, Sqlite};
-use tokio::sync::mpsc;
 use tracing::{info, error, debug};
 use crate::oracle::types::{TransactionRecord, Outcome, DecisionRecordReceiver, OutcomeUpdateReceiver, ScoredCandidate};
 
-const DB_FILE: &str = "decisions.db";
+const DB_FILE: &str = "./decisions.db";
 
 /// Helper type for deserializing records from SQLite
 #[derive(FromRow)]
@@ -52,7 +51,7 @@ impl DecisionLedger {
     ) -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&format!("sqlite://{}", DB_FILE))
+            .connect(&format!("sqlite:{}?mode=rwc", DB_FILE))
             .await
             .context("Failed to connect to SQLite database")?;
 

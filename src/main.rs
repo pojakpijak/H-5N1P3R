@@ -5,7 +5,7 @@
 use anyhow::Result;
 use h_5n1p3r::oracle::{
     DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
-    ScoredCandidate, DecisionRecordSender, OutcomeUpdateSender,
+    ScoredCandidate, DecisionRecordSender,
 };
 use h_5n1p3r::types::PremintCandidate;
 use std::collections::HashMap;
@@ -141,7 +141,7 @@ async fn demo_decision_recording(
             let sent_record = TransactionRecord {
                 id: None,
                 scored_candidate: scored_candidate.clone(),
-                transaction_signature: Some(tx_signature),
+                transaction_signature: Some(tx_signature.clone()),
                 buy_price_sol: Some(sol_spent / amount_bought),
                 sell_price_sol: None,
                 amount_bought_tokens: Some(amount_bought),
