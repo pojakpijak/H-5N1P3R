@@ -7,7 +7,7 @@ use anyhow::Result;
 use h_5n1p3r::oracle::{
     DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
     ScoredCandidate, DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
-    FeatureWeights, ScoreThresholds, OptimizedParameters,
+    FeatureWeights, ScoreThresholds,
 };
 use h_5n1p3r::types::PremintCandidate;
 use std::collections::HashMap;
