@@ -1,16 +1,18 @@
-//! Main entry point for the H-5N1P3R DecisionLedger demo
+//! Main entry point for the H-5N1P3R system
 //!
-//! This demonstrates the first pillar: Operational Memory - DecisionLedger
+//! This demonstrates Pillar I (DecisionLedger) and Pillar II (PerformanceMonitor + StrategyOptimizer)
+//! working together in an OODA loop (Observe, Orient, Decide, Act) for continuous strategy optimization.
 
 use anyhow::Result;
 use h_5n1p3r::oracle::{
     DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
-    ScoredCandidate, DecisionRecordSender,
+    ScoredCandidate, DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
+    FeatureWeights, ScoreThresholds,
 };
 use h_5n1p3r::types::PremintCandidate;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber;
 
 #[tokio::main]
@@ -20,12 +22,16 @@ async fn main() -> Result<()> {
         .with_max_level(Level::INFO)
         .init();
 
-    info!("Starting H-5N1P3R DecisionLedger Demo");
+    info!("Starting H-5N1P3R Oracle System with Pillar II (OODA Loop)");
 
-    // Create communication channels
+    // Create communication channels for DecisionLedger (Pillar I)
     let (decision_record_sender, decision_record_receiver) = mpsc::channel::<TransactionRecord>(100);
     let (outcome_update_sender, outcome_update_receiver) = mpsc::channel(100);
     let (monitor_tx_sender, monitor_tx_receiver) = mpsc::channel::<MonitoredTransaction>(100);
+
+    // Create communication channels for Pillar II (OODA Loop)
+    let (perf_report_sender, perf_report_receiver) = mpsc::channel(16);
+    let (opt_params_sender, mut opt_params_receiver) = mpsc::channel(16);
 
     // Initialize DecisionLedger
     let decision_ledger = DecisionLedger::new(
@@ -33,13 +39,35 @@ async fn main() -> Result<()> {
         outcome_update_receiver,
     ).await?;
 
+    // Get database pool for Pillar II components
+    let db_pool = decision_ledger.get_db_pool().clone();
+
     // Initialize TransactionMonitor
     let transaction_monitor = TransactionMonitor::new(
         outcome_update_sender.clone(),
         1000, // Check every 1 second
     );
 
-    // Start DecisionLedger and TransactionMonitor in background tasks
+    // Initialize Pillar II components
+    let initial_weights = FeatureWeights::default();
+    let initial_thresholds = ScoreThresholds::default();
+    
+    let performance_monitor = PerformanceMonitor::new(
+        db_pool.clone(),
+        perf_report_sender,
+        1, // Analyze every 1 minute for demo (normally would be 15+ minutes)
+        1, // Look at last 1 hour of data (normally 24+ hours)
+    );
+
+    let strategy_optimizer = StrategyOptimizer::new(
+        db_pool,
+        perf_report_receiver,
+        opt_params_sender,
+        initial_weights.clone(),
+        initial_thresholds.clone(),
+    );
+
+    // Start all components as background tasks
     let ledger_handle = tokio::spawn(async move {
         decision_ledger.run().await;
     });
@@ -48,18 +76,47 @@ async fn main() -> Result<()> {
         transaction_monitor.run(monitor_tx_receiver).await;
     });
 
+    let perf_monitor_handle = tokio::spawn(async move {
+        performance_monitor.run().await;
+    });
+
+    let strategy_optimizer_handle = tokio::spawn(async move {
+        strategy_optimizer.run().await;
+    });
+
+    // Start the OODA loop coordination task
+    let ooda_handle = tokio::spawn(async move {
+        info!("OODA Loop coordinator started, waiting for strategy optimizations...");
+        while let Some(new_params) = opt_params_receiver.recv().await {
+            info!("OODA Loop: Received new optimized parameters!");
+            info!("Reason: {}", new_params.reason);
+            info!("New liquidity weight: {:.3}", new_params.new_weights.liquidity);
+            info!("New holder_distribution weight: {:.3}", new_params.new_weights.holder_distribution);
+            
+            // In a full implementation, these parameters would be applied to a running PredictiveOracle
+            // For now, we just log them to demonstrate the complete OODA loop
+            warn!("Strategy parameters updated! Oracle would be reconfigured here.");
+        }
+    });
+
     // Demo: Create and record some decisions
     demo_decision_recording(decision_record_sender, monitor_tx_sender).await?;
 
-    // Let the system run for a bit to process outcomes
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    // Let the system run to demonstrate the complete cycle
+    info!("System running... Demonstrating OODA loop for 30 seconds");
+    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
 
-    info!("Demo completed. The DecisionLedger has recorded decisions and outcomes.");
+    info!("Demo completed. The complete OODA loop system has been demonstrated:");
+    info!("- Pillar I: DecisionLedger recorded decisions and outcomes");
+    info!("- Pillar II: PerformanceMonitor analyzed performance and StrategyOptimizer provided feedback");
     info!("Database file 'decisions.db' contains the persistent memory.");
 
-    // The handles would normally run indefinitely in a real system
+    // Shutdown all tasks
     ledger_handle.abort();
     monitor_handle.abort();
+    perf_monitor_handle.abort();
+    strategy_optimizer_handle.abort();
+    ooda_handle.abort();
 
     Ok(())
 }

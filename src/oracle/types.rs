@@ -1,6 +1,6 @@
-//! Simplified types for DecisionLedger demonstration
+//! Types for DecisionLedger and PerformanceMonitor systems
 //!
-//! This contains only the essential types needed for the DecisionLedger system.
+//! This contains types needed for the DecisionLedger system and Pillar II components.
 
 use crate::types::{PremintCandidate, Pubkey};
 use serde::{Deserialize, Serialize};
@@ -98,3 +98,95 @@ pub type DecisionRecordReceiver = tokio::sync::mpsc::Receiver<TransactionRecord>
 /// (signature, outcome, buy_price, sell_price, sol_spent, sol_received, timestamp_evaluated)
 pub type OutcomeUpdateSender = tokio::sync::mpsc::Sender<(String, Outcome, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>)>;
 pub type OutcomeUpdateReceiver = tokio::sync::mpsc::Receiver<(String, Outcome, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>)>;
+
+// --- Pillar II: Performance Monitor and Strategy Optimizer Types ---
+
+/// Feature weights for scoring algorithm (imported from types_old.rs structure)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeatureWeights {
+    pub liquidity: f64,
+    pub holder_distribution: f64,
+    pub volume_growth: f64,
+    pub holder_growth: f64,
+    pub price_change: f64,
+    pub jito_bundle_presence: f64,
+    pub creator_sell_speed: f64,
+    pub metadata_quality: f64,
+    pub social_activity: f64,
+}
+
+impl Default for FeatureWeights {
+    fn default() -> Self {
+        Self {
+            liquidity: 0.20,
+            holder_distribution: 0.15,
+            volume_growth: 0.15,
+            holder_growth: 0.10,
+            price_change: 0.10,
+            jito_bundle_presence: 0.05,
+            creator_sell_speed: 0.10,
+            metadata_quality: 0.10,
+            social_activity: 0.05,
+        }
+    }
+}
+
+/// Score thresholds for various features
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreThresholds {
+    pub min_liquidity_sol: f64,
+    pub whale_threshold: f64,
+    pub volume_growth_threshold: f64,
+    pub holder_growth_threshold: f64,
+    pub min_metadata_quality: f64,
+    pub creator_sell_penalty_threshold: u64,
+    pub social_activity_threshold: f64,
+}
+
+impl Default for ScoreThresholds {
+    fn default() -> Self {
+        Self {
+            min_liquidity_sol: 10.0,
+            whale_threshold: 0.15,
+            volume_growth_threshold: 2.0,
+            holder_growth_threshold: 1.5,
+            min_metadata_quality: 0.7,
+            creator_sell_penalty_threshold: 300,
+            social_activity_threshold: 100.0,
+        }
+    }
+}
+
+/// Complete performance report for strategy evaluation
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PerformanceReport {
+    pub timestamp: u64,
+    pub time_window_hours: f64,
+    pub total_trades_evaluated: usize,
+    
+    // Key Performance Indicators (KPIs)
+    pub win_rate_percent: f64, // (Profitable trades / All closed trades) * 100
+    pub profit_factor: f64,    // (Sum of profits / Sum of losses)
+    pub average_profit_sol: f64,
+    pub average_loss_sol: f64,
+    pub net_profit_sol: f64,
+    pub max_drawdown_percent: f64, // Maximum capital drawdown
+}
+
+/// Set of optimized parameters for Oracle
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizedParameters {
+    pub new_weights: FeatureWeights,
+    pub new_thresholds: ScoreThresholds,
+    pub reason: String, // Justification for the change
+}
+
+// --- Communication Channels for Pillar II ---
+
+// From PerformanceMonitor to StrategyOptimizer
+pub type PerformanceReportSender = tokio::sync::mpsc::Sender<PerformanceReport>;
+pub type PerformanceReportReceiver = tokio::sync::mpsc::Receiver<PerformanceReport>;
+
+// From StrategyOptimizer to main loop
+pub type OptimizedParametersSender = tokio::sync::mpsc::Sender<OptimizedParameters>;
+pub type OptimizedParametersReceiver = tokio::sync::mpsc::Receiver<OptimizedParameters>;
