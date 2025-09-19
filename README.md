@@ -147,7 +147,7 @@ To wymaga trzech kluczowych filarów:
 
 # Budowa "Geniuszu" – Silnik Predykcyjny z Pamięcią i Świadomością Kontekstu.
 
-# I. Pamięć Operacyjna: DecisionLedger (Księga Decyzji)
+# I. Pamięć Operacyjna: DecisionLedger (Księga Decyzji)  // ZADANIE ZREALIZOWANE.
 
 System musi mieć trwałą pamięć o wszystkich swoich interakcjach z rynkiem.
 
