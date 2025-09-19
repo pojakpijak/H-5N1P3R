@@ -8,10 +8,13 @@ use h_5n1p3r::oracle::{
     DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
     ScoredCandidate, DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
     FeatureWeights, ScoreThresholds,
+    // Pillar III imports
+    MarketRegimeDetector, OracleDataSources, MarketRegime, OracleConfig,
 };
 use h_5n1p3r::types::PremintCandidate;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn, Level};
 use tracing_subscriber;
 
@@ -67,6 +70,32 @@ async fn main() -> Result<()> {
         initial_thresholds.clone(),
     );
 
+    // --- Pillar III: Initialize MarketRegimeDetector ---
+    info!("Initializing Pillar III: MarketRegimeDetector");
+    
+    // Create shared state for current market regime
+    let current_market_regime = Arc::new(RwLock::new(MarketRegime::LowActivity));
+    
+    // Initialize Oracle configuration with regime-specific parameters
+    let oracle_config = OracleConfig::default();
+    
+    // Initialize data sources for market regime detection
+    let http_client = reqwest::Client::new();
+    let data_sources_for_regime = Arc::new(OracleDataSources::new(
+        vec![], // Empty RPC clients for now (placeholder)
+        http_client,
+        oracle_config,
+    ));
+    
+    // Create MarketRegimeDetector
+    let regime_detector = MarketRegimeDetector::new(
+        data_sources_for_regime,
+        current_market_regime.clone(),
+        60, // Analyze market regime every 60 seconds
+    );
+    
+    info!("MarketRegimeDetector initialized successfully");
+
     // Start all components as background tasks
     let ledger_handle = tokio::spawn(async move {
         decision_ledger.run().await;
@@ -84,18 +113,40 @@ async fn main() -> Result<()> {
         strategy_optimizer.run().await;
     });
 
-    // Start the OODA loop coordination task
+    // Start Pillar III: MarketRegimeDetector
+    let regime_detector_handle = tokio::spawn(async move {
+        regime_detector.run().await;
+    });
+
+    // Start the enhanced OODA loop coordination task (now with regime awareness)
+    let current_regime_clone = current_market_regime.clone();
     let ooda_handle = tokio::spawn(async move {
-        info!("OODA Loop coordinator started, waiting for strategy optimizations...");
+        info!("Enhanced OODA Loop coordinator started with Pillar III regime awareness...");
+        
+        // Create a periodic task to log current market regime
+        let regime_monitor = current_regime_clone.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let current_regime = *regime_monitor.read().await;
+                info!("Current Market Regime: {:?}", current_regime);
+            }
+        });
+        
+        // Handle strategy optimization updates
         while let Some(new_params) = opt_params_receiver.recv().await {
+            let current_regime = *current_regime_clone.read().await;
+            
             info!("OODA Loop: Received new optimized parameters!");
-            info!("Reason: {}", new_params.reason);
+            info!("Current Market Regime: {:?}", current_regime);
+            info!("Optimization Reason: {}", new_params.reason);
             info!("New liquidity weight: {:.3}", new_params.new_weights.liquidity);
             info!("New holder_distribution weight: {:.3}", new_params.new_weights.holder_distribution);
             
-            // In a full implementation, these parameters would be applied to a running PredictiveOracle
-            // For now, we just log them to demonstrate the complete OODA loop
-            warn!("Strategy parameters updated! Oracle would be reconfigured here.");
+            // In a full implementation, these parameters would be applied to the current regime
+            // and potentially influence the regime-specific parameter mapping
+            warn!("Strategy parameters updated! In full implementation, these would update regime-specific configs for {:?}", current_regime);
         }
     });
 
@@ -103,12 +154,13 @@ async fn main() -> Result<()> {
     demo_decision_recording(decision_record_sender, monitor_tx_sender).await?;
 
     // Let the system run to demonstrate the complete cycle
-    info!("System running... Demonstrating OODA loop for 30 seconds");
+    info!("System running... Demonstrating enhanced OODA loop with Pillar III for 30 seconds");
     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
 
-    info!("Demo completed. The complete OODA loop system has been demonstrated:");
+    info!("Demo completed. The complete enhanced OODA loop system has been demonstrated:");
     info!("- Pillar I: DecisionLedger recorded decisions and outcomes");
     info!("- Pillar II: PerformanceMonitor analyzed performance and StrategyOptimizer provided feedback");
+    info!("- Pillar III: MarketRegimeDetector provided contextual market awareness");
     info!("Database file 'decisions.db' contains the persistent memory.");
 
     // Shutdown all tasks
@@ -116,6 +168,7 @@ async fn main() -> Result<()> {
     monitor_handle.abort();
     perf_monitor_handle.abort();
     strategy_optimizer_handle.abort();
+    regime_detector_handle.abort(); // Pillar III cleanup
     ooda_handle.abort();
 
     Ok(())

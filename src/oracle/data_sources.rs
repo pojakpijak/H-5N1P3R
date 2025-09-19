@@ -508,9 +508,8 @@ impl Default for SocialActivity {
 mod tests {
     use super::*;
     use crate::oracle::types::OracleConfig;
-    use crate::types::PremintCandidate;
-    use solana_sdk::pubkey::Pubkey;
-    use std::sync::Arc;
+    use crate::types::{PremintCandidate, Pubkey};
+    use reqwest::Client;
 
     fn create_test_config() -> OracleConfig {
         OracleConfig::default()
@@ -518,8 +517,8 @@ mod tests {
 
     fn create_test_candidate() -> PremintCandidate {
         PremintCandidate {
-            mint: Pubkey::new_unique(),
-            creator: Pubkey::new_unique(),
+            mint: "TestMintAddress".to_string(),
+            creator: "TestCreatorAddress".to_string(),
             program: "test".to_string(),
             slot: 12345,
             timestamp: 1640995200,
