@@ -49,3 +49,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "h-5n1p3r"
 path = "src/main.rs"
+
+[[bin]]
+name = "test_optimization"
+path = "src/bin/test_optimization.rs"

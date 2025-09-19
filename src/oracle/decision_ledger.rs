@@ -96,6 +96,11 @@ impl DecisionLedger {
         })
     }
 
+    /// Get a clone of the database pool for use by other components
+    pub fn get_db_pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+
     /// Main execution loop - processes incoming decisions and outcome updates
     pub async fn run(mut self) {
         info!("DecisionLedger is running...");
