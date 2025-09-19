@@ -190,3 +190,209 @@ pub type PerformanceReportReceiver = tokio::sync::mpsc::Receiver<PerformanceRepo
 // From StrategyOptimizer to main loop
 pub type OptimizedParametersSender = tokio::sync::mpsc::Sender<OptimizedParameters>;
 pub type OptimizedParametersReceiver = tokio::sync::mpsc::Receiver<OptimizedParameters>;
+
+// --- Pillar III: Contextual Adaptations (MarketRegimeDetector) Types ---
+
+/// Represents the identified market state/regime.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum MarketRegime {
+    /// Bullish market: high activity, rising prices, low risk aversion
+    Bullish,
+    /// Bearish market: low activity, falling prices, high risk aversion
+    Bearish,
+    /// Choppy market: sideways movement, high volatility, no clear trend
+    Choppy,
+    /// High network congestion: elevated fees, high transaction failure risk
+    HighCongestion,
+    /// Low activity market: very low volume and activity
+    LowActivity,
+}
+
+impl Default for MarketRegime {
+    fn default() -> Self {
+        MarketRegime::LowActivity
+    }
+}
+
+/// Set of scoring parameters specific to a market regime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegimeSpecificParameters {
+    pub weights: FeatureWeights,
+    pub thresholds: ScoreThresholds,
+    // Can add other parameters like buy_score_threshold in the future
+}
+
+impl Default for RegimeSpecificParameters {
+    fn default() -> Self {
+        Self {
+            weights: FeatureWeights::default(),
+            thresholds: ScoreThresholds::default(),
+        }
+    }
+}
+
+/// Extended Oracle configuration with regime-specific parameters for Pillar III.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleConfig {
+    /// RPC endpoints
+    pub rpc_endpoints: Vec<String>,
+    /// Pump.fun API key
+    pub pump_fun_api_key: Option<String>,
+    /// Bitquery API key
+    pub bitquery_api_key: Option<String>,
+    /// RPC retry attempts
+    pub rpc_retry_attempts: usize,
+    /// RPC timeout in seconds
+    pub rpc_timeout_seconds: u64,
+    /// Cache TTL in seconds
+    pub cache_ttl_seconds: u64,
+    /// Maximum parallel requests
+    pub max_parallel_requests: usize,
+    /// Rate limit requests per second
+    pub rate_limit_requests_per_second: u32,
+    /// GUI notification threshold
+    pub notify_threshold: u8,
+
+    /// Regime-specific parameters mapping for Pillar III
+    /// Each market regime has its own set of weights and thresholds
+    pub regime_parameters: std::collections::HashMap<MarketRegime, RegimeSpecificParameters>,
+
+    // Additional modular architecture fields
+    /// Adaptive weights recalculation interval
+    pub adaptive_recalc_interval: u64,
+    /// Circuit breaker failure threshold
+    pub circuit_breaker_failure_threshold: u32,
+    /// Circuit breaker cooldown in seconds
+    pub circuit_breaker_cooldown_seconds: u64,
+    /// Maximum cache entries
+    pub max_cache_entries: usize,
+}
+
+impl Default for OracleConfig {
+    fn default() -> Self {
+        let mut regime_parameters = std::collections::HashMap::new();
+        
+        // Default parameters for each regime - these would be optimized based on historical data
+        let low_activity = RegimeSpecificParameters {
+            weights: FeatureWeights {
+                liquidity: 0.25,      // Higher weight on liquidity in low activity
+                holder_distribution: 0.20,
+                volume_growth: 0.10,  // Lower weight as volume is low
+                holder_growth: 0.15,
+                price_change: 0.05,   // Less important in low activity
+                jito_bundle_presence: 0.05,
+                creator_sell_speed: 0.10,
+                metadata_quality: 0.10,
+                social_activity: 0.00, // Almost irrelevant in low activity
+            },
+            thresholds: ScoreThresholds::default(),
+        };
+
+        let bullish = RegimeSpecificParameters {
+            weights: FeatureWeights {
+                liquidity: 0.15,
+                holder_distribution: 0.10,
+                volume_growth: 0.25,  // High weight on volume in bull market
+                holder_growth: 0.20,  // High weight on holder growth
+                price_change: 0.15,   // Price momentum important
+                jito_bundle_presence: 0.05,
+                creator_sell_speed: 0.05, // Less concern about creator selling in bull market
+                metadata_quality: 0.05,
+                social_activity: 0.00,
+            },
+            thresholds: ScoreThresholds {
+                min_liquidity_sol: 5.0, // Lower requirement in bull market
+                whale_threshold: 0.20,   // Higher tolerance for whales
+                volume_growth_threshold: 1.5, // Lower bar for volume growth
+                holder_growth_threshold: 1.2,
+                min_metadata_quality: 0.6,
+                creator_sell_penalty_threshold: 500, // Higher tolerance
+                social_activity_threshold: 50.0,
+            },
+        };
+
+        let bearish = RegimeSpecificParameters {
+            weights: FeatureWeights {
+                liquidity: 0.30,      // Very high weight on liquidity in bear market
+                holder_distribution: 0.25, // Important to avoid whale dumps
+                volume_growth: 0.05,  // Volume growth rare in bear market
+                holder_growth: 0.05,
+                price_change: 0.00,   // Price changes often negative
+                jito_bundle_presence: 0.05,
+                creator_sell_speed: 0.20, // Very important - avoid fast selling creators
+                metadata_quality: 0.10,
+                social_activity: 0.00,
+            },
+            thresholds: ScoreThresholds {
+                min_liquidity_sol: 20.0, // Higher requirement in bear market
+                whale_threshold: 0.10,   // Lower tolerance for whales
+                volume_growth_threshold: 3.0, // Higher bar for volume growth
+                holder_growth_threshold: 2.0,
+                min_metadata_quality: 0.8,
+                creator_sell_penalty_threshold: 150, // Lower tolerance
+                social_activity_threshold: 200.0,
+            },
+        };
+
+        let choppy = RegimeSpecificParameters {
+            weights: FeatureWeights {
+                liquidity: 0.20,
+                holder_distribution: 0.15,
+                volume_growth: 0.15,
+                holder_growth: 0.15,
+                price_change: 0.00,   // Price changes unreliable in choppy market
+                jito_bundle_presence: 0.10, // More important for execution timing
+                creator_sell_speed: 0.15,
+                metadata_quality: 0.10,
+                social_activity: 0.00,
+            },
+            thresholds: ScoreThresholds::default(),
+        };
+
+        let high_congestion = RegimeSpecificParameters {
+            weights: FeatureWeights {
+                liquidity: 0.15,
+                holder_distribution: 0.10,
+                volume_growth: 0.10,
+                holder_growth: 0.10,
+                price_change: 0.10,
+                jito_bundle_presence: 0.35, // Very high weight on Jito bundles for execution
+                creator_sell_speed: 0.05,
+                metadata_quality: 0.05,
+                social_activity: 0.00,
+            },
+            thresholds: ScoreThresholds {
+                min_liquidity_sol: 15.0,
+                whale_threshold: 0.15,
+                volume_growth_threshold: 2.0,
+                holder_growth_threshold: 1.5,
+                min_metadata_quality: 0.5, // Lower bar due to execution urgency
+                creator_sell_penalty_threshold: 300,
+                social_activity_threshold: 100.0,
+            },
+        };
+
+        regime_parameters.insert(MarketRegime::LowActivity, low_activity);
+        regime_parameters.insert(MarketRegime::Bullish, bullish);
+        regime_parameters.insert(MarketRegime::Bearish, bearish);
+        regime_parameters.insert(MarketRegime::Choppy, choppy);
+        regime_parameters.insert(MarketRegime::HighCongestion, high_congestion);
+
+        Self {
+            rpc_endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],
+            pump_fun_api_key: None,
+            bitquery_api_key: None,
+            rpc_retry_attempts: 3,
+            rpc_timeout_seconds: 10,
+            cache_ttl_seconds: 300,
+            max_parallel_requests: 10,
+            rate_limit_requests_per_second: 20,
+            notify_threshold: 75,
+            regime_parameters,
+            adaptive_recalc_interval: 100,
+            circuit_breaker_failure_threshold: 5,
+            circuit_breaker_cooldown_seconds: 60,
+            max_cache_entries: 1000,
+        }
+    }
+}
