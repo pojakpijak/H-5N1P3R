@@ -91,8 +91,8 @@ impl DecisionLedger {
                         error!("Failed to insert transaction record: {:?}", e);
                     }
                 },
-                Some((signature, outcome, buy_price, sell_price, sol_spent, sol_received, evaluated_at)) = self.outcome_update_receiver.recv() => {
-                    if let Err(e) = self.storage.update_outcome(&signature, outcome, buy_price, sell_price, sol_spent, sol_received, evaluated_at).await {
+                Some((signature, outcome, buy_price, sell_price, sol_spent, sol_received, evaluated_at, is_verified)) = self.outcome_update_receiver.recv() => {
+                    if let Err(e) = self.storage.update_outcome(&signature, outcome, buy_price, sell_price, sol_spent, sol_received, evaluated_at, is_verified).await {
                         error!("Failed to update outcome for signature {}: {:?}", signature, e);
                     }
                 },

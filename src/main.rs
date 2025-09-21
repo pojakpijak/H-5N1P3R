@@ -14,9 +14,11 @@ use h_5n1p3r::oracle::{
 use h_5n1p3r::types::PremintCandidate;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn, Level};
 use tracing_subscriber;
+use solana_client::nonblocking::rpc_client::RpcClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,10 +49,20 @@ async fn main() -> Result<()> {
         .expect("Expected SQLite storage for backward compatibility")
         .clone();
 
-    // Initialize TransactionMonitor
+    // Initialize TransactionMonitor with RPC client
+    let rpc_client = Arc::new(RpcClient::new_with_timeout(
+        "https://api.mainnet-beta.solana.com".to_string(),
+        Duration::from_secs(30),
+    ));
+    
+    // Placeholder wallet pubkey - in real implementation this would come from config
+    let wallet_pubkey = "11111111111111111111111111111112".to_string(); // System program as placeholder
+    
     let transaction_monitor = TransactionMonitor::new(
         outcome_update_sender.clone(),
         1000, // Check every 1 second
+        rpc_client,
+        wallet_pubkey,
     );
 
     // Initialize Pillar II components
