@@ -66,3 +66,7 @@ path = "src/bin/test_optimization.rs"
 [[bin]]
 name = "demo_persistent_queue"
 path = "examples/demo_persistent_queue.rs"
+
+[[example]]
+name = "hot_swap_demo"
+path = "examples/hot_swap_demo.rs"
