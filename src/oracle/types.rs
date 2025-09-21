@@ -42,6 +42,14 @@ pub enum Outcome {
     FailedExecution,
     /// Candidate scored but transaction never sent
     NotExecuted,
+    
+    // New detailed error states for on-chain verification
+    /// Transaction not finalized within timeout period
+    ConfirmationTimeout,
+    /// Transaction finalized but failed on-chain
+    ExecutionError(String),
+    /// Transaction finalized successfully but outcome couldn't be verified
+    VerificationFailed(String),
 }
 
 impl Default for Outcome {
@@ -95,9 +103,9 @@ pub type DecisionRecordSender = tokio::sync::mpsc::Sender<TransactionRecord>;
 pub type DecisionRecordReceiver = tokio::sync::mpsc::Receiver<TransactionRecord>;
 
 /// Channel for sending outcome updates to DecisionLedger
-/// (signature, outcome, buy_price, sell_price, sol_spent, sol_received, timestamp_evaluated)
-pub type OutcomeUpdateSender = tokio::sync::mpsc::Sender<(String, Outcome, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>)>;
-pub type OutcomeUpdateReceiver = tokio::sync::mpsc::Receiver<(String, Outcome, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>)>;
+/// (signature, outcome, buy_price, sell_price, sol_spent, sol_received, timestamp_evaluated, is_verified)
+pub type OutcomeUpdateSender = tokio::sync::mpsc::Sender<(String, Outcome, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>, bool)>;
+pub type OutcomeUpdateReceiver = tokio::sync::mpsc::Receiver<(String, Outcome, Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<u64>, bool)>;
 
 // --- Pillar II: Performance Monitor and Strategy Optimizer Types ---
 

@@ -75,6 +75,7 @@ async fn test_decision_ledger_basic_functionality() {
         Some(1.0),
         Some(1.1),
         Some(candidate.timestamp + 5000),
+        true, // This is a verified outcome in the test
     )).await.expect("Failed to send outcome update");
 
     // Give the system a moment to process

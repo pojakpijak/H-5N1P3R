@@ -73,7 +73,8 @@ async fn test_normalized_storage_basic() {
     storage.update_outcome(
         &signature,
         Outcome::Profit(0.2),
-        None, None, None, Some(1.2), Some(1000003)
+        None, None, None, Some(1.2), Some(1000003),
+        true // Mark as verified for the test
     ).await.expect("Failed to update outcome");
 
     // Test record count (should be at least 1, might have other records from other tests)

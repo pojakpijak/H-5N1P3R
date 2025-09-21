@@ -46,6 +46,11 @@ tokio-retry = "0.3"
 # Async traits
 async-trait = "0.1"
 
+# Solana dependencies for on-chain verification
+solana-client = "2.0"
+solana-sdk = "2.0"
+solana-transaction-status = "2.0"
+
 [lib]
 name = "h_5n1p3r"
 path = "src/lib.rs"

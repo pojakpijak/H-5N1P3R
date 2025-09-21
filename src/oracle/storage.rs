@@ -29,6 +29,7 @@ pub trait LedgerStorage: Send + Sync {
         initial_sol_spent: Option<f64>,
         final_sol_received: Option<f64>,
         timestamp_evaluated: Option<u64>,
+        is_verified: bool,
     ) -> Result<()>;
 
     /// Retrieves historical records since a given timestamp (for analysis).
@@ -130,7 +131,8 @@ impl SqliteLedger {
                 timestamp_transaction_sent INTEGER,
                 timestamp_outcome_evaluated INTEGER,
                 actual_outcome TEXT NOT NULL,
-                market_context_snapshot TEXT NOT NULL
+                market_context_snapshot TEXT NOT NULL,
+                is_verified BOOLEAN NOT NULL DEFAULT FALSE
             );
             "#
         )
@@ -201,8 +203,9 @@ impl LedgerStorage for SqliteLedger {
         initial_sol_spent: Option<f64>,
         final_sol_received: Option<f64>,
         timestamp_evaluated: Option<u64>,
+        is_verified: bool,
     ) -> Result<()> {
-        debug!("Updating outcome for signature: {}", signature);
+        debug!("Updating outcome for signature: {} (verified: {})", signature, is_verified);
         
         sqlx::query(
             r#"
@@ -213,7 +216,8 @@ impl LedgerStorage for SqliteLedger {
                 sell_price_sol = COALESCE(?, sell_price_sol),
                 initial_sol_spent = COALESCE(?, initial_sol_spent),
                 final_sol_received = COALESCE(?, final_sol_received),
-                timestamp_outcome_evaluated = COALESCE(?, timestamp_outcome_evaluated)
+                timestamp_outcome_evaluated = COALESCE(?, timestamp_outcome_evaluated),
+                is_verified = ?
             WHERE transaction_signature = ?;
             "#
         )
@@ -223,6 +227,7 @@ impl LedgerStorage for SqliteLedger {
         .bind(initial_sol_spent)
         .bind(final_sol_received)
         .bind(timestamp_evaluated.map(|t| t as i64))
+        .bind(is_verified)
         .bind(signature)
         .execute(&self.pool)
         .await
@@ -486,8 +491,9 @@ impl LedgerStorage for SqliteLedgerNormalized {
         initial_sol_spent: Option<f64>,
         final_sol_received: Option<f64>,
         timestamp_evaluated: Option<u64>,
+        is_verified: bool,
     ) -> Result<()> {
-        debug!("Updating outcome for signature: {} (normalized schema)", signature);
+        debug!("Updating outcome for signature: {} (normalized schema, verified: {})", signature, is_verified);
 
         let pnl_sol = match (final_sol_received, initial_sol_spent) {
             (Some(received), Some(spent)) => Some(received - spent),
@@ -506,7 +512,7 @@ impl LedgerStorage for SqliteLedgerNormalized {
         )
         .bind(serde_json::to_string(&outcome)?)
         .bind(pnl_sol)
-        .bind(outcome != Outcome::NotExecuted && outcome != Outcome::PendingConfirmation)
+        .bind(is_verified)
         .bind(signature)
         .execute(&self.pool)
         .await
