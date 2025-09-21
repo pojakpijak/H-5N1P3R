@@ -49,6 +49,9 @@ async fn main() -> Result<()> {
         .expect("Expected SQLite storage for backward compatibility")
         .clone();
 
+    // Get storage for TransactionMonitor
+    let storage = decision_ledger.get_storage();
+
     // Initialize TransactionMonitor with RPC client
     let rpc_client = Arc::new(RpcClient::new_with_timeout(
         "https://api.mainnet-beta.solana.com".to_string(),
@@ -59,6 +62,7 @@ async fn main() -> Result<()> {
     let wallet_pubkey = "11111111111111111111111111111112".to_string(); // System program as placeholder
     
     let transaction_monitor = TransactionMonitor::new(
+        storage,
         outcome_update_sender.clone(),
         1000, // Check every 1 second
         rpc_client,

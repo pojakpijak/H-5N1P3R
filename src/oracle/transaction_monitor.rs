@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::{sync::mpsc, time::sleep};
 use tracing::{info, warn, error, debug};
 use crate::oracle::types::{Outcome, OutcomeUpdateSender};
+use crate::oracle::storage::LedgerStorage;
 use crate::types::Pubkey;
 use std::sync::Arc;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -26,7 +27,7 @@ pub struct MonitoredTransaction {
 
 /// TransactionMonitor tracks the outcomes of trading transactions
 pub struct TransactionMonitor {
-    active_transactions: Vec<MonitoredTransaction>, // Transactions currently being monitored
+    storage: Arc<dyn LedgerStorage>, // Persistent storage for monitoring queue
     update_sender: OutcomeUpdateSender, // Channel to send updates to DecisionLedger
     monitor_interval: Duration,
     rpc_client: Arc<RpcClient>, // RPC client for on-chain verification
@@ -37,13 +38,14 @@ pub struct TransactionMonitor {
 impl TransactionMonitor {
     /// Create a new TransactionMonitor with RPC client for on-chain verification
     pub fn new(
+        storage: Arc<dyn LedgerStorage>,
         update_sender: OutcomeUpdateSender,
         monitor_interval_ms: u64,
         rpc_client: Arc<RpcClient>,
         wallet_pubkey: Pubkey,
     ) -> Self {
         Self {
-            active_transactions: Vec::new(),
+            storage,
             update_sender,
             monitor_interval: Duration::from_millis(monitor_interval_ms),
             rpc_client,
@@ -54,13 +56,21 @@ impl TransactionMonitor {
 
     /// Main execution loop - monitors active transactions and processes new ones
     pub async fn run(mut self, mut new_tx_receiver: mpsc::Receiver<MonitoredTransaction>) {
-        info!("TransactionMonitor is running...");
+        info!("TransactionMonitor is running with persistent storage...");
+        
+        // Clean up any previously completed transactions on startup
+        if let Err(e) = self.storage.cleanup_completed_monitoring().await {
+            warn!("Failed to cleanup completed monitoring transactions on startup: {}", e);
+        }
+        
         loop {
             tokio::select! {
                 // Receive new transactions to monitor
                 Some(new_tx) = new_tx_receiver.recv() => {
                     info!("Adding new transaction to monitor: {}", new_tx.signature);
-                    self.active_transactions.push(new_tx);
+                    if let Err(e) = self.storage.enqueue_for_monitoring(&new_tx).await {
+                        error!("Failed to enqueue transaction {} for monitoring: {}", new_tx.signature, e);
+                    }
                 },
                 // Periodically check active transactions
                 _ = sleep(self.monitor_interval) => {
@@ -77,9 +87,17 @@ impl TransactionMonitor {
     /// Process all currently active transactions
     async fn process_active_transactions(&mut self) {
         let now = chrono::Utc::now().timestamp_millis() as u64;
-        let mut transactions_to_remove = Vec::new();
+        
+        // Load pending transactions from persistent storage
+        let active_transactions = match self.storage.get_pending_monitoring_transactions().await {
+            Ok(transactions) => transactions,
+            Err(e) => {
+                error!("Failed to load pending monitoring transactions: {}", e);
+                return;
+            }
+        };
 
-        for (i, tx) in self.active_transactions.iter().enumerate() {
+        for tx in active_transactions {
             if tx.monitor_until < now {
                 warn!("Monitoring for transaction {} expired. Marking as ConfirmationTimeout.", tx.signature);
                 // Send timeout status to DecisionLedger
@@ -90,12 +108,15 @@ impl TransactionMonitor {
                 )).await {
                     error!("Failed to send timeout outcome update: {}", e);
                 }
-                transactions_to_remove.push(i);
+                // Mark as Failed in storage
+                if let Err(e) = self.storage.update_monitoring_status(&tx.signature, "Failed").await {
+                    error!("Failed to update monitoring status to Failed for {}: {}", tx.signature, e);
+                }
                 continue;
             }
 
             // --- REAL ON-CHAIN VERIFICATION ---
-            match self.verify_transaction_on_chain(tx).await {
+            match self.verify_transaction_on_chain(&tx).await {
                 Ok(Some((outcome, buy_price_sol, sell_price_sol, final_sol_received))) => {
                     info!("Transaction {} outcome verified on-chain: {:?}", tx.signature, outcome);
                     let is_verified = matches!(outcome, Outcome::Profit(_) | Outcome::Loss(_));
@@ -103,38 +124,48 @@ impl TransactionMonitor {
                     if let Err(e) = self.update_sender.send((
                         tx.signature.clone(),
                         outcome,
-                        Some(buy_price_sol),
-                        sell_price_sol,
-                        Some(tx.initial_sol_spent),
-                        final_sol_received,
-                        Some(now),
-                        is_verified
+                        Some(buy_price_sol), sell_price_sol, 
+                        Some(tx.initial_sol_spent), final_sol_received, 
+                        Some(now), is_verified
                     )).await {
                         error!("Failed to send verified outcome update: {}", e);
                     }
-                    transactions_to_remove.push(i);
+                    // Mark as Completed in storage
+                    if let Err(e) = self.storage.update_monitoring_status(&tx.signature, "Completed").await {
+                        error!("Failed to update monitoring status to Completed for {}: {}", tx.signature, e);
+                    }
                 },
                 Ok(None) => {
-                    // Transaction still pending confirmation, continue monitoring
-                    debug!("Transaction {} still pending confirmation", tx.signature);
+                    debug!("Transaction {} still pending verification", tx.signature);
+                    // Transaction is still pending - leave it in the queue for next check
                 },
-                Err(e) => {
-                    error!("Failed to verify transaction {}: {}", tx.signature, e);
+                Err(verification_error) => {
+                    warn!("Verification failed for transaction {}: {}", tx.signature, verification_error);
                     if let Err(send_err) = self.update_sender.send((
                         tx.signature.clone(),
-                        Outcome::VerificationFailed(e.to_string()),
+                        Outcome::VerificationFailed(format!("Verification error: {}", verification_error)),
                         None, None, None, None, Some(now), false
                     )).await {
                         error!("Failed to send verification failed update: {}", send_err);
                     }
-                    transactions_to_remove.push(i);
+                    // Mark as Failed in storage
+                    if let Err(e) = self.storage.update_monitoring_status(&tx.signature, "Failed").await {
+                        error!("Failed to update monitoring status to Failed for {}: {}", tx.signature, e);
+                    }
                 }
             }
         }
-
-        // Remove completed transactions
-        for i in transactions_to_remove.into_iter().rev() {
-            self.active_transactions.remove(i);
+        
+        // Periodically clean up completed/failed transactions (every ~10 processing cycles to avoid overhead)
+        static mut CLEANUP_COUNTER: u32 = 0;
+        unsafe {
+            CLEANUP_COUNTER += 1;
+            if CLEANUP_COUNTER >= 10 {
+                CLEANUP_COUNTER = 0;
+                if let Err(e) = self.storage.cleanup_completed_monitoring().await {
+                    warn!("Failed to cleanup completed monitoring transactions: {}", e);
+                }
+            }
         }
     }
 
@@ -240,8 +271,8 @@ impl TransactionMonitor {
         Ok((pnl, buy_price, Some(sell_price), Some(final_sol)))
     }
 
-    /// Get a read-only reference to active transactions (for debugging/metrics)
-    pub fn get_active_transactions(&self) -> &[MonitoredTransaction] {
-        &self.active_transactions
+    /// Get active transactions from persistent storage (for debugging/metrics)
+    pub async fn get_active_transactions(&self) -> Result<Vec<MonitoredTransaction>, anyhow::Error> {
+        self.storage.get_pending_monitoring_transactions().await
     }
 }

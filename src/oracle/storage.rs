@@ -10,6 +10,7 @@ use tracing::{info, debug};
 use std::sync::Arc;
 
 use crate::oracle::types::{TransactionRecord, Outcome, ScoredCandidate};
+use crate::oracle::transaction_monitor::MonitoredTransaction;
 
 /// Formal contract for persistent operational memory.
 /// Defines operations that must be supported by any database engine.
@@ -47,6 +48,20 @@ pub trait LedgerStorage: Send + Sync {
 
     /// Health check for the storage backend.
     async fn health_check(&self) -> Result<bool>;
+    
+    // === Persistent Monitoring Queue Methods ===
+    
+    /// Enqueue a transaction for monitoring in the persistent queue.
+    async fn enqueue_for_monitoring(&self, tx: &MonitoredTransaction) -> Result<()>;
+    
+    /// Get all pending transactions from the monitoring queue.
+    async fn get_pending_monitoring_transactions(&self) -> Result<Vec<MonitoredTransaction>>;
+    
+    /// Update the status of a transaction in the monitoring queue.
+    async fn update_monitoring_status(&self, signature: &str, status: &str) -> Result<()>;
+    
+    /// Remove completed transactions from the monitoring queue (cleanup).
+    async fn cleanup_completed_monitoring(&self) -> Result<u64>;
     
     /// Allows downcasting to concrete storage types for backward compatibility
     fn as_any(&self) -> &dyn std::any::Any;
@@ -139,6 +154,23 @@ impl SqliteLedger {
         .execute(&pool)
         .await
         .context("Failed to create transaction_records table")?;
+
+        // Create the monitoring_queue table for persistent transaction monitoring
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS monitoring_queue (
+                signature TEXT PRIMARY KEY NOT NULL,
+                mint TEXT NOT NULL,
+                initial_sol_spent REAL NOT NULL,
+                -- Status: Pending, Processing, Completed, Failed
+                status TEXT NOT NULL DEFAULT 'Pending',
+                created_at INTEGER NOT NULL
+            );
+            "#
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create monitoring_queue table")?;
 
         info!("SqliteLedger initialized and connected to {}", DB_FILE);
 
@@ -303,6 +335,94 @@ impl LedgerStorage for SqliteLedger {
         }
     }
     
+    // === Persistent Monitoring Queue Implementation ===
+    
+    async fn enqueue_for_monitoring(&self, tx: &MonitoredTransaction) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO monitoring_queue (signature, mint, initial_sol_spent, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#
+        )
+        .bind(&tx.signature)
+        .bind(tx.mint.clone())
+        .bind(tx.initial_sol_spent)
+        .bind("Pending")
+        .bind(chrono::Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await
+        .context("Failed to enqueue transaction for monitoring")?;
+        
+        debug!("Enqueued transaction {} for monitoring", tx.signature);
+        Ok(())
+    }
+    
+    async fn get_pending_monitoring_transactions(&self) -> Result<Vec<MonitoredTransaction>> {
+        let rows: Vec<(String, String, f64, i64)> = sqlx::query_as(
+            r#"
+            SELECT signature, mint, initial_sol_spent, created_at 
+            FROM monitoring_queue 
+            WHERE status = 'Pending' 
+            ORDER BY created_at ASC
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch pending monitoring transactions")?;
+        
+        let mut transactions = Vec::new();
+        for (signature, mint, initial_sol_spent, created_at) in rows {
+            // Calculate monitor_until as 30 seconds after creation (as per current TransactionMonitor logic)
+            let monitor_until = (created_at + 30_000) as u64; // 30 seconds in milliseconds
+            
+            transactions.push(MonitoredTransaction {
+                signature,
+                mint: mint.clone(), // The mint field in DB is stored as String, same as Pubkey type alias
+                amount_bought_tokens: 0.0, // Not stored in queue, will be reconstructed if needed
+                initial_sol_spent,
+                monitor_until,
+            });
+        }
+        
+        Ok(transactions)
+    }
+    
+    async fn update_monitoring_status(&self, signature: &str, status: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE monitoring_queue 
+            SET status = ? 
+            WHERE signature = ?
+            "#
+        )
+        .bind(status)
+        .bind(signature)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update monitoring status")?;
+        
+        debug!("Updated monitoring status for transaction {} to {}", signature, status);
+        Ok(())
+    }
+    
+    async fn cleanup_completed_monitoring(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM monitoring_queue 
+            WHERE status IN ('Completed', 'Failed')
+            "#
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to cleanup completed monitoring transactions")?;
+        
+        let rows_affected = result.rows_affected();
+        if rows_affected > 0 {
+            debug!("Cleaned up {} completed monitoring transactions", rows_affected);
+        }
+        Ok(rows_affected)
+    }
+    
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -410,6 +530,23 @@ impl SqliteLedgerNormalized {
         .execute(&pool)
         .await
         .context("Failed to create market_context table")?;
+
+        // Create the monitoring_queue table for persistent transaction monitoring
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS monitoring_queue (
+                signature TEXT PRIMARY KEY NOT NULL,
+                mint TEXT NOT NULL,
+                initial_sol_spent REAL NOT NULL,
+                -- Status: Pending, Processing, Completed, Failed
+                status TEXT NOT NULL DEFAULT 'Pending',
+                created_at INTEGER NOT NULL
+            );
+            "#
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create monitoring_queue table")?;
 
         info!("SqliteLedgerNormalized initialized with normalized schema");
 
@@ -664,6 +801,94 @@ impl LedgerStorage for SqliteLedgerNormalized {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }
+    }
+    
+    // === Persistent Monitoring Queue Implementation ===
+    
+    async fn enqueue_for_monitoring(&self, tx: &MonitoredTransaction) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO monitoring_queue (signature, mint, initial_sol_spent, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            "#
+        )
+        .bind(&tx.signature)
+        .bind(tx.mint.clone())
+        .bind(tx.initial_sol_spent)
+        .bind("Pending")
+        .bind(chrono::Utc::now().timestamp_millis())
+        .execute(&self.pool)
+        .await
+        .context("Failed to enqueue transaction for monitoring")?;
+        
+        debug!("Enqueued transaction {} for monitoring", tx.signature);
+        Ok(())
+    }
+    
+    async fn get_pending_monitoring_transactions(&self) -> Result<Vec<MonitoredTransaction>> {
+        let rows: Vec<(String, String, f64, i64)> = sqlx::query_as(
+            r#"
+            SELECT signature, mint, initial_sol_spent, created_at 
+            FROM monitoring_queue 
+            WHERE status = 'Pending' 
+            ORDER BY created_at ASC
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch pending monitoring transactions")?;
+        
+        let mut transactions = Vec::new();
+        for (signature, mint, initial_sol_spent, created_at) in rows {
+            // Calculate monitor_until as 30 seconds after creation (as per current TransactionMonitor logic)
+            let monitor_until = (created_at + 30_000) as u64; // 30 seconds in milliseconds
+            
+            transactions.push(MonitoredTransaction {
+                signature,
+                mint: mint.clone(), // The mint field in DB is stored as String, same as Pubkey type alias
+                amount_bought_tokens: 0.0, // Not stored in queue, will be reconstructed if needed
+                initial_sol_spent,
+                monitor_until,
+            });
+        }
+        
+        Ok(transactions)
+    }
+    
+    async fn update_monitoring_status(&self, signature: &str, status: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE monitoring_queue 
+            SET status = ? 
+            WHERE signature = ?
+            "#
+        )
+        .bind(status)
+        .bind(signature)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update monitoring status")?;
+        
+        debug!("Updated monitoring status for transaction {} to {}", signature, status);
+        Ok(())
+    }
+    
+    async fn cleanup_completed_monitoring(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM monitoring_queue 
+            WHERE status IN ('Completed', 'Failed')
+            "#
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to cleanup completed monitoring transactions")?;
+        
+        let rows_affected = result.rows_affected();
+        if rows_affected > 0 {
+            debug!("Cleaned up {} completed monitoring transactions", rows_affected);
+        }
+        Ok(rows_affected)
     }
     
     fn as_any(&self) -> &dyn std::any::Any {
