@@ -6,6 +6,7 @@
 pub mod types;
 pub mod types_old; // Old types that are still in use
 pub mod storage; // Storage abstraction layer
+pub mod storage_demo; // Demonstration of storage flexibility
 pub mod sqlite_ledger; // SQLite implementation of storage
 pub mod decision_ledger; // Backward compatibility alias
 pub mod transaction_monitor;
