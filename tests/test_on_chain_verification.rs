@@ -4,6 +4,7 @@
 
 use h_5n1p3r::oracle::{
     TransactionMonitor, MonitoredTransaction, Outcome,
+    storage::{LedgerStorage, SqliteLedger}
 };
 use solana_client::nonblocking::rpc_client::RpcClient;
 use std::sync::Arc;
@@ -14,6 +15,9 @@ use tokio::sync::mpsc;
 async fn test_transaction_monitor_with_rpc_client() {
     // Create channels for outcome updates
     let (outcome_sender, mut outcome_receiver) = mpsc::channel(10);
+
+    // Create storage for the monitor
+    let storage: Arc<dyn LedgerStorage> = SqliteLedger::new().await.unwrap();
 
     // Create RPC client with mainnet endpoint
     let rpc_client = Arc::new(RpcClient::new_with_timeout(
@@ -26,6 +30,7 @@ async fn test_transaction_monitor_with_rpc_client() {
 
     // Create TransactionMonitor with real RPC client
     let transaction_monitor = TransactionMonitor::new(
+        storage,
         outcome_sender,
         500, // Check every 500ms for faster testing
         rpc_client,

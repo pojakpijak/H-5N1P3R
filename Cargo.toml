@@ -62,3 +62,7 @@ path = "src/main.rs"
 [[bin]]
 name = "test_optimization"
 path = "src/bin/test_optimization.rs"
+
+[[bin]]
+name = "demo_persistent_queue"
+path = "examples/demo_persistent_queue.rs"
