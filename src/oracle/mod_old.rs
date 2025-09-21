@@ -141,7 +141,19 @@ impl OracleBuilder {
         candidate_receiver: tokio::sync::mpsc::Receiver<crate::types::PremintCandidate>,
         scored_sender: tokio::sync::mpsc::Sender<ScoredCandidate>,
     ) -> anyhow::Result<PredictiveOracle> {
-        PredictiveOracle::new(candidate_receiver, scored_sender, self.config)
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use crate::oracle::quantum_oracle::{SimpleOracleConfig};
+        
+        // Convert OracleConfig to SimpleOracleConfig
+        let simple_config = SimpleOracleConfig {
+            weights: crate::oracle::types::FeatureWeights::default(),
+            thresholds: crate::oracle::types::ScoreThresholds::default(),
+            rpc_endpoints: self.config.rpc_endpoints,
+        };
+        
+        let config = Arc::new(RwLock::new(simple_config));
+        PredictiveOracle::new(candidate_receiver, scored_sender, config)
     }
 }
 
