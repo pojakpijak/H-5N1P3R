@@ -5,6 +5,7 @@
 
 pub mod types;
 pub mod types_old; // Old types that are still in use
+pub mod storage; // Storage abstraction layer
 pub mod decision_ledger;
 pub mod transaction_monitor;
 pub mod performance_monitor;
@@ -23,6 +24,9 @@ pub use types::{
     // Pillar III types
     MarketRegime, RegimeSpecificParameters, OracleConfig,
 };
+
+// Re-export storage abstraction
+pub use storage::{LedgerStorage, SqliteLedger, SqliteLedgerNormalized};
 
 // Re-export key components
 pub use decision_ledger::DecisionLedger;

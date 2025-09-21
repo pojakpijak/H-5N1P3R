@@ -43,7 +43,9 @@ async fn main() -> Result<()> {
     ).await?;
 
     // Get database pool for Pillar II components
-    let db_pool = decision_ledger.get_db_pool().clone();
+    let db_pool = decision_ledger.get_db_pool()
+        .expect("Expected SQLite storage for backward compatibility")
+        .clone();
 
     // Initialize TransactionMonitor
     let transaction_monitor = TransactionMonitor::new(

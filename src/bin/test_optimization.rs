@@ -32,7 +32,9 @@ async fn main() -> Result<()> {
         outcome_update_receiver,
     ).await?;
 
-    let db_pool = decision_ledger.get_db_pool().clone();
+    let db_pool = decision_ledger.get_db_pool()
+        .expect("Expected SQLite storage for backward compatibility")
+        .clone();
 
     // Start DecisionLedger
     let _ledger_handle = tokio::spawn(async move {
