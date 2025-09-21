@@ -1,11 +1,13 @@
-//! Oracle module - DecisionLedger and Pillar II components
+//! Oracle module - Storage abstraction and Pillar II components
 //!
-//! This module contains the DecisionLedger operational memory system (Pillar I)
+//! This module contains the storage abstraction layer, SqliteLedger implementation (Pillar I)
 //! and the PerformanceMonitor/StrategyOptimizer feedback loop (Pillar II).
 
 pub mod types;
 pub mod types_old; // Old types that are still in use
-pub mod decision_ledger;
+pub mod storage; // Storage abstraction layer
+pub mod sqlite_ledger; // SQLite implementation of storage
+pub mod decision_ledger; // Backward compatibility alias
 pub mod transaction_monitor;
 pub mod performance_monitor;
 pub mod strategy_optimizer;
@@ -24,8 +26,14 @@ pub use types::{
     MarketRegime, RegimeSpecificParameters, OracleConfig,
 };
 
+// Re-export storage components
+pub use storage::LedgerStorage;
+pub use sqlite_ledger::SqliteLedger;
+
+// Backward compatibility
+pub use sqlite_ledger::SqliteLedger as DecisionLedger;
+
 // Re-export key components
-pub use decision_ledger::DecisionLedger;
 pub use transaction_monitor::{TransactionMonitor, MonitoredTransaction};
 pub use performance_monitor::PerformanceMonitor;
 pub use strategy_optimizer::StrategyOptimizer;

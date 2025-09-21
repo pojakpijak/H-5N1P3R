@@ -43,6 +43,9 @@ moka = { version = "0.12", features = ["future"] }
 # Retry logic
 tokio-retry = "0.3"
 
+# Async traits
+async-trait = "0.1"
+
 [lib]
 name = "h_5n1p3r"
 path = "src/lib.rs"

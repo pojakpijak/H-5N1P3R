@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use h_5n1p3r::oracle::{
-    DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
+    SqliteLedger, LedgerStorage, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
     ScoredCandidate, DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
     FeatureWeights, ScoreThresholds,
     // Pillar III imports
@@ -36,14 +36,17 @@ async fn main() -> Result<()> {
     let (perf_report_sender, perf_report_receiver) = mpsc::channel(16);
     let (opt_params_sender, mut opt_params_receiver) = mpsc::channel(16);
 
-    // Initialize DecisionLedger
-    let decision_ledger = DecisionLedger::new(
+    // Initialize SqliteLedger and create storage abstraction
+    let sqlite_ledger = SqliteLedger::new(
         decision_record_receiver,
         outcome_update_receiver,
     ).await?;
 
-    // Get database pool for Pillar II components
-    let db_pool = decision_ledger.get_db_pool().clone();
+    // Create storage abstraction for other components
+    let storage: Arc<dyn LedgerStorage> = Arc::new(SqliteLedger::new_storage_only().await?);
+
+    // Get database pool for Pillar II components (backward compatibility)
+    let db_pool = sqlite_ledger.get_db_pool().clone();
 
     // Initialize TransactionMonitor
     let transaction_monitor = TransactionMonitor::new(
@@ -98,7 +101,7 @@ async fn main() -> Result<()> {
 
     // Start all components as background tasks
     let ledger_handle = tokio::spawn(async move {
-        decision_ledger.run().await;
+        sqlite_ledger.run().await;
     });
 
     let monitor_handle = tokio::spawn(async move {
@@ -158,10 +161,10 @@ async fn main() -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
 
     info!("Demo completed. The complete enhanced OODA loop system has been demonstrated:");
-    info!("- Pillar I: DecisionLedger recorded decisions and outcomes");
+    info!("- Pillar I: SqliteLedger (via LedgerStorage abstraction) recorded decisions and outcomes");
     info!("- Pillar II: PerformanceMonitor analyzed performance and StrategyOptimizer provided feedback");
     info!("- Pillar III: MarketRegimeDetector provided contextual market awareness");
-    info!("Database file 'decisions.db' contains the persistent memory.");
+    info!("Database file 'decisions.db' contains the persistent memory with normalized schema.");
 
     // Shutdown all tasks
     ledger_handle.abort();
