@@ -7,7 +7,7 @@ use anyhow::Result;
 use h_5n1p3r::oracle::{
     DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
     ScoredCandidate, DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
-    FeatureWeights, ScoreThresholds,
+    FeatureWeights, ScoreThresholds, RuntimeOracleConfig, SharedRuntimeConfig,
     // Pillar III imports
     MarketRegimeDetector, OracleDataSources, MarketRegime, OracleConfig,
 };
@@ -67,6 +67,11 @@ async fn main() -> Result<()> {
     // Initialize Pillar II components
     let initial_weights = FeatureWeights::default();
     let initial_thresholds = ScoreThresholds::default();
+    
+    // Create shared runtime configuration for hot-swap capability
+    let runtime_config: SharedRuntimeConfig = Arc::new(RwLock::new(
+        RuntimeOracleConfig::new(initial_weights.clone(), initial_thresholds.clone())
+    ));
     
     let performance_monitor = PerformanceMonitor::new(
         decision_ledger.get_storage(),
@@ -131,35 +136,48 @@ async fn main() -> Result<()> {
         regime_detector.run().await;
     });
 
-    // Start the enhanced OODA loop coordination task (now with regime awareness)
+    // Start the enhanced OODA loop coordination task (now with regime awareness and hot-swap)
     let current_regime_clone = current_market_regime.clone();
+    let runtime_config_clone = runtime_config.clone();
     let ooda_handle = tokio::spawn(async move {
-        info!("Enhanced OODA Loop coordinator started with Pillar III regime awareness...");
+        info!("Enhanced OODA Loop coordinator started with Pillar III regime awareness and hot-swap capability...");
         
-        // Create a periodic task to log current market regime
+        // Create a periodic task to log current market regime and configuration status
         let regime_monitor = current_regime_clone.clone();
+        let config_monitor = runtime_config_clone.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 let current_regime = *regime_monitor.read().await;
-                info!("Current Market Regime: {:?}", current_regime);
+                let config = config_monitor.read().await;
+                info!("Current Market Regime: {:?}, Config Updates: {}", current_regime, config.update_count);
             }
         });
         
-        // Handle strategy optimization updates
+        // Handle strategy optimization updates with hot-swap implementation
         while let Some(new_params) = opt_params_receiver.recv().await {
             let current_regime = *current_regime_clone.read().await;
             
-            info!("OODA Loop: Received new optimized parameters!");
+            info!("🔄 OODA Loop: Hot-swap activation - Received new optimized parameters!");
             info!("Current Market Regime: {:?}", current_regime);
             info!("Optimization Reason: {}", new_params.reason);
             info!("New liquidity weight: {:.3}", new_params.new_weights.liquidity);
             info!("New holder_distribution weight: {:.3}", new_params.new_weights.holder_distribution);
             
-            // In a full implementation, these parameters would be applied to the current regime
-            // and potentially influence the regime-specific parameter mapping
-            warn!("Strategy parameters updated! In full implementation, these would update regime-specific configs for {:?}", current_regime);
+            // Apply hot-swap update to runtime configuration
+            {
+                let mut config = runtime_config_clone.write().await;
+                let old_liquidity_weight = config.current_weights.liquidity;
+                config.apply_optimization(new_params);
+                let new_liquidity_weight = config.current_weights.liquidity;
+                
+                info!("🎯 Hot-swap completed! Liquidity weight: {:.3} → {:.3} (Update #{})", 
+                      old_liquidity_weight, new_liquidity_weight, config.update_count);
+            }
+            
+            // In a full implementation, this would signal Oracle components to reload their configuration
+            info!("✅ Strategy parameters hot-swapped successfully for regime {:?}", current_regime);
         }
     });
 
@@ -167,12 +185,31 @@ async fn main() -> Result<()> {
     demo_decision_recording(decision_record_sender, monitor_tx_sender).await?;
 
     // Let the system run to demonstrate the complete cycle
-    info!("System running... Demonstrating enhanced OODA loop with Pillar III for 30 seconds");
+    info!("System running... Demonstrating enhanced OODA loop with Pillar III and hot-swap for 30 seconds");
+    
+    // Create a task to periodically demonstrate configuration access
+    let runtime_config_demo = runtime_config.clone();
+    let config_demo_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            let config = runtime_config_demo.read().await;
+            info!("📊 Current Oracle Config - Liquidity Weight: {:.3}, Updates: {}, Last Update: {}", 
+                  config.current_weights.liquidity, 
+                  config.update_count,
+                  if config.update_count > 0 { 
+                      format!("{}ms ago", chrono::Utc::now().timestamp_millis() as u64 - config.last_update_timestamp)
+                  } else { 
+                      "Never".to_string() 
+                  }
+            );
+        }
+    });
     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
 
     info!("Demo completed. The complete enhanced OODA loop system has been demonstrated:");
     info!("- Pillar I: DecisionLedger recorded decisions and outcomes");
-    info!("- Pillar II: PerformanceMonitor analyzed performance and StrategyOptimizer provided feedback");
+    info!("- Pillar II: PerformanceMonitor analyzed performance and StrategyOptimizer provided feedback with hot-swap");
     info!("- Pillar III: MarketRegimeDetector provided contextual market awareness");
     info!("Database file 'decisions.db' contains the persistent memory.");
 
@@ -183,6 +220,7 @@ async fn main() -> Result<()> {
     strategy_optimizer_handle.abort();
     regime_detector_handle.abort(); // Pillar III cleanup
     ooda_handle.abort();
+    config_demo_handle.abort();
 
     Ok(())
 }

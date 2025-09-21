@@ -21,6 +21,8 @@ pub use types::{
     PerformanceReport, OptimizedParameters,
     PerformanceReportSender, PerformanceReportReceiver,
     OptimizedParametersSender, OptimizedParametersReceiver,
+    // Hot-swap configuration types
+    RuntimeOracleConfig, SharedRuntimeConfig,
     // Pillar III types
     MarketRegime, RegimeSpecificParameters, OracleConfig,
 };

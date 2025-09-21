@@ -4,10 +4,12 @@ use anyhow::Result;
 use h_5n1p3r::oracle::{
     DecisionLedger, TransactionRecord, Outcome, ScoredCandidate,
     PerformanceMonitor, StrategyOptimizer, FeatureWeights, ScoreThresholds,
+    RuntimeOracleConfig, SharedRuntimeConfig,
 };
 use h_5n1p3r::types::PremintCandidate;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{info, Level};
 use tracing_subscriber;
 
@@ -94,21 +96,47 @@ async fn main() -> Result<()> {
         ScoreThresholds::default(),
     );
 
+    // Create shared runtime configuration for hot-swap demonstration
+    let runtime_config: SharedRuntimeConfig = Arc::new(RwLock::new(
+        RuntimeOracleConfig::new(FeatureWeights::default(), ScoreThresholds::default())
+    ));
+
     let _opt_handle = tokio::spawn(async move {
         strategy_optimizer.run().await;
     });
 
-    // Wait for optimization results
-    if let Some(optimized_params) = opt_params_receiver.recv().await {
-        info!("🎯 Optimization successful!");
-        info!("Reason: {}", optimized_params.reason);
-        info!("Original liquidity weight: {:.3}", FeatureWeights::default().liquidity);
-        info!("New liquidity weight: {:.3}", optimized_params.new_weights.liquidity);
-        info!("Improvement: {:.1}%", 
-              ((optimized_params.new_weights.liquidity / FeatureWeights::default().liquidity) - 1.0) * 100.0);
-    } else {
-        info!("No optimization parameters received");
-    }
+    // Hot-swap demonstration task
+    let runtime_config_clone = runtime_config.clone();
+    let _hotswap_handle = tokio::spawn(async move {
+        while let Some(optimized_params) = opt_params_receiver.recv().await {
+            let old_config = {
+                let config = runtime_config_clone.read().await;
+                (config.current_weights.liquidity, config.update_count)
+            };
+            
+            // Apply hot-swap update
+            {
+                let mut config = runtime_config_clone.write().await;
+                config.apply_optimization(optimized_params.clone());
+            }
+            
+            let new_config = {
+                let config = runtime_config_clone.read().await;
+                (config.current_weights.liquidity, config.update_count)
+            };
+            
+            info!("🎯 Optimization successful!");
+            info!("Reason: {}", optimized_params.reason);
+            info!("Original liquidity weight: {:.3}", old_config.0);
+            info!("New liquidity weight: {:.3}", new_config.0);
+            info!("Improvement: {:.1}%", (new_config.0 - old_config.0) / old_config.0 * 100.0);
+            info!("🔄 Hot-swap completed! Update #{}", new_config.1);
+            break;
+        }
+    });
+
+    // Wait a moment for optimization to complete
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     Ok(())
 }

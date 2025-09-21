@@ -199,6 +199,38 @@ pub type PerformanceReportReceiver = tokio::sync::mpsc::Receiver<PerformanceRepo
 pub type OptimizedParametersSender = tokio::sync::mpsc::Sender<OptimizedParameters>;
 pub type OptimizedParametersReceiver = tokio::sync::mpsc::Receiver<OptimizedParameters>;
 
+// --- Hot-Swap Runtime Configuration ---
+
+/// Runtime configuration state that can be updated without restart
+#[derive(Debug, Clone)]
+pub struct RuntimeOracleConfig {
+    pub current_weights: FeatureWeights,
+    pub current_thresholds: ScoreThresholds,
+    pub last_update_timestamp: u64,
+    pub update_count: u32,
+}
+
+impl RuntimeOracleConfig {
+    pub fn new(weights: FeatureWeights, thresholds: ScoreThresholds) -> Self {
+        Self {
+            current_weights: weights,
+            current_thresholds: thresholds,
+            last_update_timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            update_count: 0,
+        }
+    }
+    
+    pub fn apply_optimization(&mut self, params: OptimizedParameters) {
+        self.current_weights = params.new_weights;
+        self.current_thresholds = params.new_thresholds;
+        self.last_update_timestamp = chrono::Utc::now().timestamp_millis() as u64;
+        self.update_count += 1;
+    }
+}
+
+/// Shared runtime configuration accessible from multiple components
+pub type SharedRuntimeConfig = std::sync::Arc<tokio::sync::RwLock<RuntimeOracleConfig>>;
+
 // --- Pillar III: Contextual Adaptations (MarketRegimeDetector) Types ---
 
 /// Represents the identified market state/regime.
