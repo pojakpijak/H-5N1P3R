@@ -32,9 +32,8 @@ async fn main() -> Result<()> {
         outcome_update_receiver,
     ).await?;
 
-    let db_pool = decision_ledger.get_db_pool()
-        .expect("Expected SQLite storage for backward compatibility")
-        .clone();
+    // Get storage for the Pillar II components  
+    let storage = decision_ledger.get_storage();
 
     // Start DecisionLedger
     let _ledger_handle = tokio::spawn(async move {
@@ -49,7 +48,7 @@ async fn main() -> Result<()> {
 
     // Manually trigger performance analysis and optimization
     let performance_monitor = PerformanceMonitor::new(
-        db_pool.clone(),
+        storage.clone(),
         perf_report_sender.clone(),
         999, // Not used in manual test
         24,
@@ -88,7 +87,7 @@ async fn main() -> Result<()> {
 
     // Initialize StrategyOptimizer
     let strategy_optimizer = StrategyOptimizer::new(
-        db_pool,
+        storage,
         perf_report_receiver,
         opt_params_sender,
         FeatureWeights::default(),
@@ -118,7 +117,7 @@ async fn create_poor_performance_data(sender: mpsc::Sender<TransactionRecord>) -
     info!("Creating poor performance data to trigger optimization...");
 
     // Create several losing trades with consistently low liquidity scores
-    for i in 1..=5 {
+    for i in 1..=8 {
         let mut feature_scores = HashMap::new();
         // Low liquidity scores (the pattern we want to optimize)
         feature_scores.insert("liquidity".to_string(), 0.1 + (i as f64 * 0.05));
@@ -166,7 +165,57 @@ async fn create_poor_performance_data(sender: mpsc::Sender<TransactionRecord>) -
 
         sender.send(loss_record).await?;
     }
+    
+    // Add a few winning trades to make it more realistic
+    for i in 1..=2 {
+        let mut feature_scores = HashMap::new();
+        // High scores for winning trades
+        feature_scores.insert("liquidity".to_string(), 0.9);
+        feature_scores.insert("holder_distribution".to_string(), 0.8);
+        feature_scores.insert("volume_growth".to_string(), 0.9);
 
-    info!("Created 5 losing trades with low liquidity scores");
+        let candidate = PremintCandidate {
+            mint: format!("WinToken{}Address", i),
+            creator: format!("WinCreator{}Address", i),
+            program: "pump.fun".to_string(),
+            slot: 60000 + i,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            instruction_summary: Some("Winning token".to_string()),
+            is_jito_bundle: Some(false),
+        };
+
+        let scored_candidate = ScoredCandidate {
+            base: candidate.clone(),
+            mint: candidate.mint.clone(),
+            predicted_score: 85, // High score
+            reason: format!("Token with high liquidity #{}", i),
+            feature_scores: feature_scores.clone(),
+            calculation_time: 120_000,
+            anomaly_detected: false,
+            timestamp: candidate.timestamp,
+        };
+
+        // Create a winning transaction record
+        let win_record = TransactionRecord {
+            id: None,
+            scored_candidate,
+            transaction_signature: Some(format!("WinTx{}_{}", i, candidate.timestamp)),
+            buy_price_sol: Some(0.001),
+            sell_price_sol: Some(0.002), // Doubled the value
+            amount_bought_tokens: Some(1000.0),
+            amount_sold_tokens: Some(1000.0),
+            initial_sol_spent: Some(1.0),
+            final_sol_received: Some(2.0), // 100% profit
+            timestamp_decision_made: candidate.timestamp,
+            timestamp_transaction_sent: Some(candidate.timestamp + 1000),
+            timestamp_outcome_evaluated: Some(candidate.timestamp + 10000),
+            actual_outcome: Outcome::Profit(1.0), // 1.0 SOL profit
+            market_context_snapshot: HashMap::new(),
+        };
+
+        sender.send(win_record).await?;
+    }
+
+    info!("Created 8 losing trades and 2 winning trades with poor overall performance");
     Ok(())
 }

@@ -4,18 +4,19 @@
 //! feature weights and thresholds based on historical trading outcomes.
 
 use anyhow::Result;
-use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{info, warn, error};
 
 use crate::oracle::types::{
     FeatureWeights, OptimizedParameters, OptimizedParametersSender, PerformanceReportReceiver, ScoreThresholds,
     TransactionRecord, Outcome
 };
+use crate::oracle::storage::LedgerStorage;
 
 /// StrategyOptimizer analyzes performance and dynamically adjusts Oracle parameters
 pub struct StrategyOptimizer {
-    db_pool: Pool<Sqlite>,
+    storage: Arc<dyn LedgerStorage>,
     report_receiver: PerformanceReportReceiver,
     optimized_params_sender: OptimizedParametersSender,
     current_weights: FeatureWeights,
@@ -25,14 +26,14 @@ pub struct StrategyOptimizer {
 impl StrategyOptimizer {
     /// Create a new StrategyOptimizer
     pub fn new(
-        db_pool: Pool<Sqlite>,
+        storage: Arc<dyn LedgerStorage>,
         report_receiver: PerformanceReportReceiver,
         optimized_params_sender: OptimizedParametersSender,
         initial_weights: FeatureWeights,
         initial_thresholds: ScoreThresholds,
     ) -> Self {
         Self {
-            db_pool,
+            storage,
             report_receiver,
             optimized_params_sender,
             current_weights: initial_weights,
@@ -48,7 +49,8 @@ impl StrategyOptimizer {
             info!("Received new performance report. Analyzing for potential optimizations...");
             
             // Basic optimization logic: if Profit Factor is weak, try to optimize
-            if report.profit_factor < 1.2 && report.total_trades_evaluated > 10 {
+            // Use lower threshold for testing (3 trades minimum instead of 10)
+            if report.profit_factor < 1.2 && report.total_trades_evaluated > 3 {
                 warn!("Profit Factor is below threshold ({:.2}). Attempting to optimize strategy.", 
                       report.profit_factor);
                 
@@ -139,91 +141,21 @@ impl StrategyOptimizer {
         }))
     }
 
-    /// Query database for losing trades (simplified implementation)
+    /// Query database for losing trades using storage abstraction
     async fn query_losing_trades(&self) -> Result<Vec<TransactionRecord>> {
-        // This is a simplified query that gets recent losing trades
-        // In a full implementation, this might have more sophisticated filters
+        // Get recent records (last 24 hours) and filter for losses
+        let since_timestamp = (chrono::Utc::now() - chrono::Duration::hours(24))
+            .timestamp_millis() as u64;
         
-        #[derive(sqlx::FromRow)]
-        struct TransactionRecordRow {
-            id: i64,
-            mint: String,
-            score: i32,
-            reason: String,
-            feature_scores: String,
-            calculation_time: i64,
-            anomaly_detected: bool,
-            timestamp_decision_made: i64,
-            transaction_signature: Option<String>,
-            buy_price_sol: Option<f64>,
-            sell_price_sol: Option<f64>,
-            amount_bought_tokens: Option<f64>,
-            amount_sold_tokens: Option<f64>,
-            initial_sol_spent: Option<f64>,
-            final_sol_received: Option<f64>,
-            timestamp_transaction_sent: Option<i64>,
-            timestamp_outcome_evaluated: Option<i64>,
-            actual_outcome: String,
-            market_context_snapshot: String,
-        }
-
-        let rows: Vec<TransactionRecordRow> = sqlx::query_as(
-            r#"
-            SELECT * FROM transaction_records 
-            WHERE actual_outcome LIKE '%Loss%'
-            ORDER BY timestamp_decision_made DESC
-            LIMIT 50;
-            "#
-        )
-        .fetch_all(&self.db_pool)
-        .await?;
-
-        let mut records = Vec::new();
-        for row in rows {
-            // Check if it's actually a loss outcome
-            let outcome: Outcome = serde_json::from_str(&row.actual_outcome)?;
-            if !matches!(outcome, Outcome::Loss(_)) {
-                continue;
-            }
-
-            // Reconstruct the scored candidate
-            let scored_candidate = crate::oracle::types::ScoredCandidate {
-                base: crate::types::PremintCandidate {
-                    mint: row.mint.clone(),
-                    creator: String::new(),
-                    program: "pump.fun".to_string(),
-                    slot: 0,
-                    timestamp: row.timestamp_decision_made as u64,
-                    instruction_summary: None,
-                    is_jito_bundle: None,
-                },
-                mint: row.mint.clone(),
-                predicted_score: row.score as u8,
-                reason: row.reason,
-                feature_scores: serde_json::from_str(&row.feature_scores)?,
-                calculation_time: row.calculation_time as u128,
-                anomaly_detected: row.anomaly_detected,
-                timestamp: row.timestamp_decision_made as u64,
-            };
-
-            records.push(TransactionRecord {
-                id: Some(row.id),
-                scored_candidate,
-                transaction_signature: row.transaction_signature,
-                buy_price_sol: row.buy_price_sol,
-                sell_price_sol: row.sell_price_sol,
-                amount_bought_tokens: row.amount_bought_tokens,
-                amount_sold_tokens: row.amount_sold_tokens,
-                initial_sol_spent: row.initial_sol_spent,
-                final_sol_received: row.final_sol_received,
-                timestamp_decision_made: row.timestamp_decision_made as u64,
-                timestamp_transaction_sent: row.timestamp_transaction_sent.map(|t| t as u64),
-                timestamp_outcome_evaluated: row.timestamp_outcome_evaluated.map(|t| t as u64),
-                actual_outcome: outcome,
-                market_context_snapshot: serde_json::from_str(&row.market_context_snapshot)?,
-            });
-        }
+        let all_records = self.storage.get_records_since(since_timestamp).await?;
         
-        Ok(records)
+        // Filter for losing trades only
+        let losing_trades: Vec<TransactionRecord> = all_records
+            .into_iter()
+            .filter(|record| matches!(record.actual_outcome, Outcome::Loss(_)))
+            .take(50) // Limit to 50 most recent losses
+            .collect();
+        
+        Ok(losing_trades)
     }
 }

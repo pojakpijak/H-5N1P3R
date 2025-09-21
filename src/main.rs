@@ -44,11 +44,6 @@ async fn main() -> Result<()> {
         outcome_update_receiver,
     ).await?;
 
-    // Get database pool for Pillar II components
-    let db_pool = decision_ledger.get_db_pool()
-        .expect("Expected SQLite storage for backward compatibility")
-        .clone();
-
     // Get storage for TransactionMonitor
     let storage = decision_ledger.get_storage();
 
@@ -74,14 +69,14 @@ async fn main() -> Result<()> {
     let initial_thresholds = ScoreThresholds::default();
     
     let performance_monitor = PerformanceMonitor::new(
-        db_pool.clone(),
+        decision_ledger.get_storage(),
         perf_report_sender,
         1, // Analyze every 1 minute for demo (normally would be 15+ minutes)
         1, // Look at last 1 hour of data (normally 24+ hours)
     );
 
     let strategy_optimizer = StrategyOptimizer::new(
-        db_pool,
+        decision_ledger.get_storage(),
         perf_report_receiver,
         opt_params_sender,
         initial_weights.clone(),
