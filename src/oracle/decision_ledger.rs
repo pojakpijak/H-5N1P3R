@@ -7,7 +7,7 @@ use anyhow::{Result, Context};
 use std::sync::Arc;
 use tracing::{info, error, debug};
 use crate::oracle::types::{TransactionRecord, Outcome, DecisionRecordReceiver, OutcomeUpdateReceiver};
-use crate::oracle::storage::{LedgerStorage, SqliteLedger};
+use crate::oracle::storage::{LedgerStorage, SqliteLedger, SqliteLedgerNormalized};
 
 /// DecisionLedger provides persistent storage for Oracle decisions and outcomes
 /// Now using the storage abstraction for clean separation of concerns
@@ -25,7 +25,23 @@ impl DecisionLedger {
     ) -> Result<Self> {
         let storage = SqliteLedger::new().await?;
         
-        info!("DecisionLedger initialized with storage abstraction");
+        info!("DecisionLedger initialized with flat storage schema");
+
+        Ok(Self { 
+            storage,
+            record_receiver, 
+            outcome_update_receiver 
+        })
+    }
+
+    /// Create a new DecisionLedger with normalized SQLite backend
+    pub async fn new_normalized(
+        record_receiver: DecisionRecordReceiver,
+        outcome_update_receiver: OutcomeUpdateReceiver,
+    ) -> Result<Self> {
+        let storage = SqliteLedgerNormalized::new().await?;
+        
+        info!("DecisionLedger initialized with normalized storage schema");
 
         Ok(Self { 
             storage,
@@ -55,9 +71,11 @@ impl DecisionLedger {
     /// Get a reference to the database pool for backward compatibility
     /// This method allows existing code to continue working while we migrate
     pub fn get_db_pool(&self) -> Option<&sqlx::Pool<sqlx::Sqlite>> {
-        // Try to downcast to SqliteLedger to get the pool
+        // Try to downcast to SqliteLedger first, then SqliteLedgerNormalized
         if let Some(sqlite_ledger) = self.storage.as_ref().as_any().downcast_ref::<SqliteLedger>() {
             Some(sqlite_ledger.get_db_pool())
+        } else if let Some(sqlite_normalized) = self.storage.as_ref().as_any().downcast_ref::<SqliteLedgerNormalized>() {
+            Some(sqlite_normalized.get_db_pool())
         } else {
             None
         }

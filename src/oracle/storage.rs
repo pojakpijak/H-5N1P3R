@@ -86,6 +86,16 @@ pub struct SqliteLedger {
     pool: Pool<Sqlite>,
 }
 
+/// Normalized SQLite implementation of the LedgerStorage trait.
+/// This implementation uses a normalized schema that separates:
+/// - Main trades table
+/// - Feature scores in a separate table
+/// - Market context in a separate table
+/// This design is optimized for analytical queries and future PostgreSQL migration.
+pub struct SqliteLedgerNormalized {
+    pool: Pool<Sqlite>,
+}
+
 impl SqliteLedger {
     /// Creates a new SqliteLedger with the current flat table schema.
     /// This maintains compatibility with the existing system.
@@ -332,5 +342,325 @@ impl SqliteLedger {
             actual_outcome: serde_json::from_str(&row.actual_outcome)?,
             market_context_snapshot: serde_json::from_str(&row.market_context_snapshot)?,
         })
+    }
+}
+
+impl SqliteLedgerNormalized {
+    /// Creates a new SqliteLedgerNormalized with the normalized table schema.
+    /// This is the new, optimized schema designed for analytical queries.
+    pub async fn new() -> Result<Arc<Self>> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(&format!("sqlite:{}?mode=rwc", DB_FILE))
+            .await
+            .context("Failed to connect to SQLite database")?;
+
+        // Create the normalized schema tables
+        // Main trades table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mint TEXT NOT NULL,
+                decision_timestamp INTEGER NOT NULL,
+                signature TEXT UNIQUE,
+                final_outcome TEXT,
+                pnl_sol REAL,
+                is_verified BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            "#
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create trades table")?;
+
+        // Table for storing feature values at decision time
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS decision_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER NOT NULL,
+                feature_name TEXT NOT NULL,
+                feature_value REAL NOT NULL,
+                FOREIGN KEY (trade_id) REFERENCES trades (id)
+            );
+            "#
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create decision_features table")?;
+
+        // Table for storing market context at decision time
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS market_context (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER NOT NULL,
+                metric_name TEXT NOT NULL,
+                metric_value REAL NOT NULL,
+                FOREIGN KEY (trade_id) REFERENCES trades (id)
+            );
+            "#
+        )
+        .execute(&pool)
+        .await
+        .context("Failed to create market_context table")?;
+
+        info!("SqliteLedgerNormalized initialized with normalized schema");
+
+        Ok(Arc::new(Self { pool }))
+    }
+
+    /// Get a reference to the database pool
+    pub fn get_db_pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+}
+
+#[async_trait]
+impl LedgerStorage for SqliteLedgerNormalized {
+    async fn insert_record(&self, record: &TransactionRecord) -> Result<i64> {
+        debug!("Inserting new transaction record for mint: {} (normalized schema)", record.scored_candidate.mint);
+        
+        // Start a transaction to ensure atomicity
+        let mut tx = self.pool.begin().await.context("Failed to begin transaction")?;
+
+        // 1. Insert into trades table and get the ID
+        let trade_id = sqlx::query(
+            r#"
+            INSERT INTO trades (mint, decision_timestamp, signature, final_outcome, pnl_sol, is_verified)
+            VALUES (?, ?, ?, ?, ?, ?)
+            "#
+        )
+        .bind(&record.scored_candidate.mint)
+        .bind(record.timestamp_decision_made as i64)
+        .bind(&record.transaction_signature)
+        .bind(serde_json::to_string(&record.actual_outcome)?)
+        .bind(record.final_sol_received.map(|received| {
+            received - record.initial_sol_spent.unwrap_or(0.0)
+        }))
+        .bind(record.actual_outcome != Outcome::NotExecuted && record.actual_outcome != Outcome::PendingConfirmation)
+        .execute(&mut *tx)
+        .await
+        .context("Failed to insert into trades table")?
+        .last_insert_rowid();
+
+        // 2. Insert all feature scores into decision_features table
+        for (feature_name, feature_value) in &record.scored_candidate.feature_scores {
+            sqlx::query(
+                "INSERT INTO decision_features (trade_id, feature_name, feature_value) VALUES (?, ?, ?)"
+            )
+            .bind(trade_id)
+            .bind(feature_name)
+            .bind(feature_value)
+            .execute(&mut *tx)
+            .await
+            .context("Failed to insert feature score")?;
+        }
+
+        // 3. Insert market context into market_context table
+        for (metric_name, metric_value) in &record.market_context_snapshot {
+            sqlx::query(
+                "INSERT INTO market_context (trade_id, metric_name, metric_value) VALUES (?, ?, ?)"
+            )
+            .bind(trade_id)
+            .bind(metric_name)
+            .bind(metric_value)
+            .execute(&mut *tx)
+            .await
+            .context("Failed to insert market context")?;
+        }
+
+        // Commit the transaction
+        tx.commit().await.context("Failed to commit transaction")?;
+
+        Ok(trade_id)
+    }
+
+    async fn update_outcome(
+        &self,
+        signature: &str,
+        outcome: Outcome,
+        buy_price_sol: Option<f64>,
+        sell_price_sol: Option<f64>,
+        initial_sol_spent: Option<f64>,
+        final_sol_received: Option<f64>,
+        timestamp_evaluated: Option<u64>,
+    ) -> Result<()> {
+        debug!("Updating outcome for signature: {} (normalized schema)", signature);
+
+        let pnl_sol = match (final_sol_received, initial_sol_spent) {
+            (Some(received), Some(spent)) => Some(received - spent),
+            _ => None,
+        };
+
+        sqlx::query(
+            r#"
+            UPDATE trades
+            SET
+                final_outcome = ?,
+                pnl_sol = COALESCE(?, pnl_sol),
+                is_verified = ?
+            WHERE signature = ?
+            "#
+        )
+        .bind(serde_json::to_string(&outcome)?)
+        .bind(pnl_sol)
+        .bind(outcome != Outcome::NotExecuted && outcome != Outcome::PendingConfirmation)
+        .bind(signature)
+        .execute(&self.pool)
+        .await
+        .context(format!("Failed to update outcome for signature {}", signature))?;
+
+        Ok(())
+    }
+
+    async fn get_records_since(&self, timestamp: u64) -> Result<Vec<TransactionRecord>> {
+        // This is a complex query that joins all three tables to reconstruct the records
+        #[derive(sqlx::FromRow)]
+        struct TradeRow {
+            id: i64,
+            mint: String,
+            decision_timestamp: i64,
+            signature: Option<String>,
+            final_outcome: Option<String>,
+            pnl_sol: Option<f64>,
+            is_verified: bool,
+        }
+        
+        let trade_rows: Vec<TradeRow> = sqlx::query_as(
+            r#"
+            SELECT id, mint, decision_timestamp, signature, final_outcome, pnl_sol, is_verified
+            FROM trades 
+            WHERE decision_timestamp >= ? 
+            ORDER BY decision_timestamp ASC
+            "#
+        )
+        .bind(timestamp as i64)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch trade records")?;
+
+        let mut records = Vec::new();
+
+        for trade_row in trade_rows {
+            // Get feature scores for this trade
+            #[derive(sqlx::FromRow)]
+            struct FeatureRow {
+                feature_name: String,
+                feature_value: f64,
+            }
+            
+            let feature_rows: Vec<FeatureRow> = sqlx::query_as(
+                "SELECT feature_name, feature_value FROM decision_features WHERE trade_id = ?"
+            )
+            .bind(trade_row.id)
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to fetch feature scores")?;
+
+            let mut feature_scores = std::collections::HashMap::new();
+            for feature_row in feature_rows {
+                feature_scores.insert(feature_row.feature_name, feature_row.feature_value);
+            }
+
+            // Get market context for this trade
+            #[derive(sqlx::FromRow)]
+            struct ContextRow {
+                metric_name: String,
+                metric_value: f64,
+            }
+            
+            let context_rows: Vec<ContextRow> = sqlx::query_as(
+                "SELECT metric_name, metric_value FROM market_context WHERE trade_id = ?"
+            )
+            .bind(trade_row.id)
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to fetch market context")?;
+
+            let mut market_context_snapshot = std::collections::HashMap::new();
+            for context_row in context_rows {
+                market_context_snapshot.insert(context_row.metric_name, context_row.metric_value);
+            }
+
+            // Reconstruct the TransactionRecord
+            let scored_candidate = ScoredCandidate {
+                base: crate::types::PremintCandidate {
+                    mint: trade_row.mint.clone(),
+                    creator: String::new(), // TODO: Store in separate table
+                    program: String::new(),
+                    slot: 0,
+                    timestamp: trade_row.decision_timestamp as u64,
+                    instruction_summary: None,
+                    is_jito_bundle: None,
+                },
+                mint: trade_row.mint.clone(),
+                predicted_score: 0, // TODO: Store in trades table
+                reason: String::new(), // TODO: Store in trades table
+                feature_scores,
+                calculation_time: 0, // TODO: Store in trades table
+                anomaly_detected: false, // TODO: Store in trades table
+                timestamp: trade_row.decision_timestamp as u64,
+            };
+
+            records.push(TransactionRecord {
+                id: Some(trade_row.id),
+                scored_candidate,
+                transaction_signature: trade_row.signature,
+                buy_price_sol: None, // TODO: Store in trades table
+                sell_price_sol: None, // TODO: Store in trades table
+                amount_bought_tokens: None, // TODO: Store in trades table
+                amount_sold_tokens: None, // TODO: Store in trades table
+                initial_sol_spent: trade_row.pnl_sol.map(|pnl| if pnl < 0.0 { -pnl } else { 0.0 }),
+                final_sol_received: trade_row.pnl_sol.map(|pnl| if pnl > 0.0 { pnl } else { 0.0 }),
+                timestamp_decision_made: trade_row.decision_timestamp as u64,
+                timestamp_transaction_sent: None, // TODO: Store in trades table
+                timestamp_outcome_evaluated: None, // TODO: Store in trades table
+                actual_outcome: serde_json::from_str(&trade_row.final_outcome.unwrap_or_else(|| serde_json::to_string(&Outcome::NotExecuted).unwrap()))?,
+                market_context_snapshot,
+            });
+        }
+
+        Ok(records)
+    }
+
+    async fn get_record_by_id(&self, id: i64) -> Result<Option<TransactionRecord>> {
+        // For simplicity, delegate to get_records_since and filter
+        let all_records = self.get_records_since(0).await?;
+        Ok(all_records.into_iter().find(|r| r.id == Some(id)))
+    }
+
+    async fn get_record_by_signature(&self, signature: &str) -> Result<Option<TransactionRecord>> {
+        // For simplicity, delegate to get_records_since and filter
+        let all_records = self.get_records_since(0).await?;
+        Ok(all_records.into_iter().find(|r| 
+            r.transaction_signature.as_ref().map(|s| s.as_str()) == Some(signature)
+        ))
+    }
+
+    async fn get_record_count(&self) -> Result<i64> {
+        #[derive(sqlx::FromRow)]
+        struct CountRow {
+            count: i64,
+        }
+        
+        let count: CountRow = sqlx::query_as("SELECT COUNT(*) as count FROM trades")
+            .fetch_one(&self.pool)
+            .await
+            .context("Failed to get record count")?;
+        
+        Ok(count.count)
+    }
+
+    async fn health_check(&self) -> Result<bool> {
+        match sqlx::query("SELECT 1").execute(&self.pool).await {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+    
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

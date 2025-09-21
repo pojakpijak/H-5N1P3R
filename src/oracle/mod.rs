@@ -26,7 +26,7 @@ pub use types::{
 };
 
 // Re-export storage abstraction
-pub use storage::{LedgerStorage, SqliteLedger};
+pub use storage::{LedgerStorage, SqliteLedger, SqliteLedgerNormalized};
 
 // Re-export key components
 pub use decision_ledger::DecisionLedger;
