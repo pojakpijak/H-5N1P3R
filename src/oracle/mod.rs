@@ -12,6 +12,7 @@ pub mod performance_monitor;
 pub mod strategy_optimizer;
 pub mod market_regime_detector; // Pillar III
 pub mod data_sources; // For MarketRegimeDetector
+pub mod quantum_oracle; // Universe-Class Predictive Oracle
 
 // Re-export main types
 pub use types::{
@@ -35,3 +36,4 @@ pub use performance_monitor::PerformanceMonitor;
 pub use strategy_optimizer::StrategyOptimizer;
 pub use market_regime_detector::MarketRegimeDetector; // Pillar III
 pub use data_sources::OracleDataSources; // For MarketRegimeDetector
+pub use quantum_oracle::PredictiveOracle; // Universe-Class Predictive Oracle

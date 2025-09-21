@@ -6,8 +6,8 @@
 use anyhow::Result;
 use h_5n1p3r::oracle::{
     DecisionLedger, TransactionMonitor, TransactionRecord, Outcome, MonitoredTransaction,
-    ScoredCandidate, DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
-    FeatureWeights, ScoreThresholds,
+    DecisionRecordSender, PerformanceMonitor, StrategyOptimizer,
+    FeatureWeights, ScoreThresholds, PredictiveOracle, ScoredCandidate,
     // Pillar III imports
     MarketRegimeDetector, OracleDataSources, MarketRegime, OracleConfig,
 };
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn, Level};
+use tracing::{info, warn, error, Level};
 use tracing_subscriber;
 use solana_client::nonblocking::rpc_client::RpcClient;
 
@@ -88,6 +88,25 @@ async fn main() -> Result<()> {
         initial_thresholds.clone(),
     );
 
+    // --- Initialize PredictiveOracle for Hot-Swap Demonstration ---
+    info!("Initializing PredictiveOracle with hot-swap capability");
+    
+    // Create channels for Oracle communication
+    let (candidate_sender, candidate_receiver) = mpsc::channel::<PremintCandidate>(100);
+    let (oracle_scored_sender, mut oracle_scored_receiver) = mpsc::channel::<h_5n1p3r::oracle::quantum_oracle::ScoredCandidate>(100);
+    
+    // Create shared Oracle configuration for hot-swap
+    let shared_oracle_config = Arc::new(RwLock::new(h_5n1p3r::oracle::quantum_oracle::SimpleOracleConfig::default()));
+    
+    // Create PredictiveOracle instance with hot-swap capability
+    let oracle = Arc::new(PredictiveOracle::new(
+        candidate_receiver,
+        oracle_scored_sender,
+        shared_oracle_config.clone(),
+    )?);
+    
+    info!("PredictiveOracle initialized with hot-swap capability");
+
     // --- Pillar III: Initialize MarketRegimeDetector ---
     info!("Initializing Pillar III: MarketRegimeDetector");
     
@@ -135,9 +154,25 @@ async fn main() -> Result<()> {
     let regime_detector_handle = tokio::spawn(async move {
         regime_detector.run().await;
     });
+    
+    // Start Oracle to handle scoring (we'll feed it some demo candidates)
+    let oracle_clone = oracle.clone();
+    let oracle_handle = tokio::spawn(async move {
+        // Note: In a real implementation, the Oracle would have its own run() method
+        // For now, we'll just keep it alive for hot-swap demonstrations
+        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await; // Keep alive for 1 hour
+    });
+    
+    // Handle Oracle scoring results (optional - just for logging)
+    tokio::spawn(async move {
+        while let Some(scored) = oracle_scored_receiver.recv().await {
+            info!("Oracle scored candidate: {} with score {}", scored.mint, scored.predicted_score);
+        }
+    });
 
-    // Start the enhanced OODA loop coordination task (now with regime awareness)
+    // Start the enhanced OODA loop coordination task (now with regime awareness and hot-swap)
     let current_regime_clone = current_market_regime.clone();
+    let oracle_for_hotswap = oracle.clone();
     let ooda_handle = tokio::spawn(async move {
         info!("Enhanced OODA Loop coordinator started with Pillar III regime awareness...");
         
@@ -152,7 +187,7 @@ async fn main() -> Result<()> {
             }
         });
         
-        // Handle strategy optimization updates
+        // Handle strategy optimization updates with REAL hot-swap implementation
         while let Some(new_params) = opt_params_receiver.recv().await {
             let current_regime = *current_regime_clone.read().await;
             
@@ -162,9 +197,16 @@ async fn main() -> Result<()> {
             info!("New liquidity weight: {:.3}", new_params.new_weights.liquidity);
             info!("New holder_distribution weight: {:.3}", new_params.new_weights.holder_distribution);
             
-            // In a full implementation, these parameters would be applied to the current regime
-            // and potentially influence the regime-specific parameter mapping
-            warn!("Strategy parameters updated! In full implementation, these would update regime-specific configs for {:?}", current_regime);
+            // IMPLEMENTATION OF "ACT" PHASE: Hot-swap Oracle configuration in real-time
+            match oracle_for_hotswap.update_config(new_params.new_weights, new_params.new_thresholds).await {
+                Ok(()) => {
+                    info!("✅ OODA Loop ACT Phase: Oracle configuration hot-swapped successfully!");
+                    info!("🔄 Oracle is now using the new optimized parameters without restart");
+                },
+                Err(e) => {
+                    error!("❌ Failed to hot-swap Oracle configuration: {}", e);
+                }
+            }
         }
     });
 
@@ -179,6 +221,7 @@ async fn main() -> Result<()> {
     info!("- Pillar I: DecisionLedger recorded decisions and outcomes");
     info!("- Pillar II: PerformanceMonitor analyzed performance and StrategyOptimizer provided feedback");
     info!("- Pillar III: MarketRegimeDetector provided contextual market awareness");
+    info!("- Hot-Swap: PredictiveOracle configuration can be updated in real-time");
     info!("Database file 'decisions.db' contains the persistent memory.");
 
     // Shutdown all tasks
@@ -187,6 +230,7 @@ async fn main() -> Result<()> {
     perf_monitor_handle.abort();
     strategy_optimizer_handle.abort();
     regime_detector_handle.abort(); // Pillar III cleanup
+    oracle_handle.abort(); // Oracle cleanup
     ooda_handle.abort();
 
     Ok(())
@@ -201,9 +245,13 @@ async fn demo_decision_recording(
 
     // Create some example decisions
     for i in 1..=3 {
+        // Create demo addresses as strings - in real usage these would be actual addresses
+        let mint_address = format!("DemoToken{}Address{}", i, chrono::Utc::now().timestamp_millis());
+        let creator_address = format!("DemoCreator{}Address{}", i, chrono::Utc::now().timestamp_millis());
+        
         let candidate = PremintCandidate {
-            mint: format!("DemoToken{}Address", i),
-            creator: format!("DemoCreator{}Address", i),
+            mint: mint_address.clone(),
+            creator: creator_address,
             program: "pump.fun".to_string(),
             slot: 12345 + i,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
